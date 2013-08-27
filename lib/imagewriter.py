@@ -1,9 +1,29 @@
 #!/usr/bin/python
+#  
+#  Copyright (c) 2007-2009 Canonical Ltd.
+#  
+#  Author: Oliver Grawert <ogra@ubuntu.com>
+# 
+#   Modifications 2013 from papoteur <papoteur@mageialinux-online.org>
+#   and Geiger David <david.david@mageialinux-online.org>
+#  This program is free software; you can redistribute it and/or 
+#  modify it under the terms of the GNU General Public License as 
+#  published by the Free Software Foundation; either version 2 of the
+#  License, or (at your option) any later version.
+# 
+#  This program is distributed in the hope that it will be useful,
+#  but WITHOUT ANY WARRANTY; without even the implied warranty of
+#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#  GNU General Public License for more details.
+# 
+#  You should have received a copy of the GNU General Public License
+#  along with this program; if not, write to the Free Software Foundation,
+#  Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA.
 
 import gtk
 import gtk.glade
 import gobject
-from subprocess import Popen,PIPE,call,STDOUT
+from subprocess import Popen,PIPE,call
 import os
 import signal
 
@@ -25,21 +45,22 @@ class ImageWriter:
         self.gladefile = "/usr/share/imagewriter/imagewriter.glade"
         self.wTree = gtk.glade.XML(self.gladefile)
 
-        # make sure we have a target device
-        self.get_devices()
-
         # get globally needed widgets
         self.window = self.wTree.get_widget("main_dialog")
         self.devicelist = self.wTree.get_widget("device_combobox")
-        self.logview = self.wTree.get_widget("detail_text")        
+        self.logview = self.wTree.get_widget("detail_text")
+        eventbox = self.wTree.get_widget("eventbox")
+        bgcol = gtk.gdk.color_parse("white")
+        eventbox.modify_bg(gtk.STATE_NORMAL, bgcol)
         self.log = self.logview.get_buffer()
         self.ddpid = 0
 
         # set default file filter to *.img
+        # Added for Mageia : *.iso
         self.chooser = self.wTree.get_widget("filechooserbutton")
         filt = gtk.FileFilter()
-        filt.add_pattern("*.img")
         filt.add_pattern("*.iso")
+        filt.add_pattern("*.img")
         self.chooser.set_filter(filt)
 
         # set callbacks
@@ -54,18 +75,24 @@ class ImageWriter:
         self.wTree.signal_autoconnect(dict)
 
         self.window.show_all()
+        # make sure we have a target device
+        self.get_devices()
 
     def get_devices(self):
-        list = Popen(["/usr/lib/imagewriter/find_devices.py"], stdout=PIPE).communicate()[0]
-        if not len(list):
-            dialog = self.wTree.get_widget("nodev_dialog")
-            dialog.run()
-            exit(0)
+        dialog = self.wTree.get_widget("nodev_dialog")
+        while True:
+            list = Popen(["/usr/lib/imagewriter/find_devices"], stdout=PIPE).communicate()[0]
+            if not len(list):
+                dialog.run()
+                #dialog.hide()
+            else:
+                break
         self.combo = self.wTree.get_widget("device_combobox")
         list = list.strip().split('\n')
         for item in list:
             name,path = item.split(',')
             self.combo.append_text(name+' ('+path.lstrip()+')')
+        dialog.destroy()
 
     def device_selected(self, widget):
         write_button = self.wTree.get_widget("write_button")
@@ -87,15 +114,16 @@ class ImageWriter:
         if resp:
             self.do_umount(target)
             dialog.hide()
+            task = self.raw_write(source, target)
+            gobject.idle_add(task.next)
             while gtk.events_pending():
                 gtk.main_iteration(True)
-            self.raw_write(source, target)
+            
         else:
             self.close('dummy')
 
     def do_umount(self, target):
         mounts = self.get_mounted(target)
-        print len(mounts)
         if mounts:
             self.logger(_('Unmounting all partitions of ')+target+':')
         for mount in mounts:
@@ -126,35 +154,58 @@ class ImageWriter:
              self.emergency()
 
     def raw_write(self, source, target):
-        data = Popen(['ls -l '+source], shell=True, stdout=PIPE, stderr=PIPE)
-        src_size = float(data.stdout.readline().split()[4])*1.0
-        progress = self.wTree.get_widget("progressbar")
-        progress.set_sensitive(True)
-        progress.set_text(_('Writing ')+source.split('/')[-1]+_(' to ')+self.dev)
-        self.logger(_('Executing: dd if=')+source+' of='+target)
-        while gtk.events_pending():
-           gtk.main_iteration(True)
-        output = Popen(['dd if='+source+' of='+target+' bs=1M'], stdout=PIPE, stderr=STDOUT, shell=True)
-        self.ddpid = output.pid
-        while output.stdout.readline():
-            line = output.stdout.readline().strip()
-            while gtk.events_pending():
-                gtk.main_iteration(True)
-            if line.endswith('MB/s'):
-                target_size = line.split()[0]
-                self.logger(_('Wrote: ')+target_size+' bytes')
-                size = float(target_size)*100/float(src_size)
+        bs=4096*128
+        b = os.path.getsize(source)
+        try:
+            ifc=open(source, "rb",1)
+        except:
+             self.logger(_('Reading error.'))
+             self.emergency()
+        else:
+            try:
+                ofc= open(target, 'wb',0)
+            except:
+                 self.logger(_('You have not the rights for writing on the device'))
+                 self.emergency()
+            else:
+                progress = self.wTree.get_widget("progressbar")
+                progress.set_sensitive(True)
+                progress.set_text(_('Writing ')+source.split('/')[-1]+_(' to ')+self.dev)
+                self.logger(_('Executing copy from ')+source+' to '+target)
                 while gtk.events_pending():
-                    gtk.main_iteration(True)
-                progress.set_fraction(float(size/100))
-        pid, sts = os.waitpid(output.pid, 0)
-        if sts != 0:
-            self.logger(_('The dd process ended with an error !'))
-            self.emergency()
-            return False
-        progress.set_fraction(1.0)
-        self.logger(_('Image ')+source.split('/')[-1]+_(' successfully written to')+target)
-        self.success()
+                   gtk.main_iteration(True)
+                steps=range(0, b, b/100)
+                indice=1
+                written=0
+                ncuts=b/bs
+                for i in xrange(0,ncuts):
+                    try:
+                        buf=ifc.read(bs)
+                    except:
+                        self.logger(_("Reading error."))
+                        self.emergency()
+                    try:
+                        ofc.write(buf)
+                    except:
+                        self.logger(_("Writing error."))
+                        self.emergency()
+                    written= written+bs
+                    if written > steps[indice]:
+                        if indice%5==0:
+                            self.logger(_('Wrote: ')+str(indice)+'% '+str(written)+' bytes')
+                            mark = self.log.create_mark("end", self.log.get_end_iter(), False)
+                            self.logview.scroll_to_mark(mark, 0.05, True, 0.0, 1.0)
+                        progress.set_fraction(float(indice)/100)
+                        indice +=1
+                        os.fsync(ofc)
+                        yield True
+                progress.set_fraction(1.0)
+                self.logger(_('Image ')+source.split('/')[-1]+_(' successfully written to')+target)
+                self.logger(_('Bytes written: ')+str(written))
+                ofc.close()
+                self.success()
+            ifc.close()
+            yield False
 
     def success(self):
         dialog = self.wTree.get_widget("success_dialog")
@@ -196,6 +247,10 @@ class ImageWriter:
     def write_logfile(self):
         start = self.log.get_start_iter()
         end = self.log.get_end_iter()
+        from os.path import expanduser
+        home = expanduser("~")
+        logfile=open(home+'/.imagewriter.log',"w")
+        logfile.write(self.log.get_text(start, end, False))
         print self.log.get_text(start, end, False)
 
     def logger(self, text):
