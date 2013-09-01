@@ -174,7 +174,7 @@ class ImageWriter:
                 self.logger(_('Executing copy from ')+source+' to '+target)
                 while gtk.events_pending():
                    gtk.main_iteration(True)
-                steps=range(0, b, b/100)
+                steps=range(0, b+1, b/100)
                 indice=1
                 written=0
                 ncuts=b/bs
