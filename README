@@ -4,3 +4,11 @@ dpkg-builpackage -i.git
 
 To avoid the following error:
  dpkg-source: error: unrepresentable changes to source
+
+Modifications by papoteur 31-08-2013
+- replaced the dd command with direct writing command python.
+- progressbar is functionnal.
+- added writing ~/.imagewriter.log at the end.
+- the application doesn't close when a stick is inserted after the start and a dialog box which is displayed to saye it.
+- point at the end of the logview window.
+- indicating the name of the log file.
